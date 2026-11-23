@@ -1,0 +1,5 @@
+# Añadir al fichero hosts del PC cliente y de la VM:
+#   Linux/macOS: /etc/hosts
+#   Windows:     C:\Windows\System32\drivers\etc\hosts  (abrir el Bloc de notas como administrador)
+# Sustituye 192.168.56.10 por la IP de tu VM (en AWS: la IP pública).
+192.168.56.10  pyme.lan www.pyme.lan soporte.pyme.lan nube.pyme.lan estado.pyme.lan

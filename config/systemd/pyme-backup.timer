@@ -1,0 +1,10 @@
+[Unit]
+Description=Copia diaria de los servicios PYME (02:30)
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+RandomizedDelaySec=5m
+
+[Install]
+WantedBy=timers.target

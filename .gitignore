@@ -1,0 +1,13 @@
+# Secretos: nunca al repositorio
+.env
+*.key
+*.pem
+*.crt
+proxy/certs/*
+!proxy/certs/.gitkeep
+
+# Copias locales
+backups/
+*.sql
+*.sql.gz
+*.tar.gz

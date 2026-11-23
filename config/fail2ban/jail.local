@@ -1,0 +1,14 @@
+# /etc/fail2ban/jail.local
+[DEFAULT]
+# Lee el journal de systemd (en Debian 12 no existe /var/log/auth.log)
+backend  = systemd
+bantime  = 1h
+findtime = 10m
+maxretry = 3
+banaction = ufw
+# Añade aquí la IP de tu PC para no bloquearte durante las pruebas
+ignoreip = 127.0.0.1/8 ::1
+
+[sshd]
+enabled = true
+port    = ssh

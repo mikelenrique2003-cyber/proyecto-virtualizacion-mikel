@@ -1,0 +1,249 @@
+# =====================================================================
+#  PYME Soluciones S.L. - Servicios empresariales virtualizados
+#  Joomla (web corporativa) + GLPI (TI) + Nextcloud (documental)
+#  Proxy inverso Nginx con HTTPS + Uptime Kuma (monitorización)
+#
+#  Uso:  cp .env.example .env  ->  ./scripts/generar-secretos.sh
+#        ./scripts/generar-certificado.sh  ->  docker compose up -d
+# =====================================================================
+name: pyme
+
+x-mariadb-healthcheck: &mariadb-healthcheck
+  test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+  interval: 10s
+  timeout: 5s
+  retries: 10
+  start_period: 30s
+
+services:
+
+  # -------------------------------------------------------------------
+  #  PROXY INVERSO: único contenedor que publica puertos (80 y 443)
+  # -------------------------------------------------------------------
+  proxy:
+    image: nginx:1.27-alpine
+    container_name: pyme-proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./proxy/conf.d:/etc/nginx/conf.d:ro
+      - ./proxy/certs:/etc/nginx/certs:ro
+    networks:
+      red_frontal:
+        ipv4_address: 172.30.0.10
+    depends_on:
+      - joomla
+      - glpi
+      - nextcloud
+      - uptime-kuma
+
+  # -------------------------------------------------------------------
+  #  SERVICIO 1: JOOMLA (web corporativa)
+  # -------------------------------------------------------------------
+  joomla:
+    image: joomla:${JOOMLA_TAG:-5-apache}
+    container_name: pyme-joomla
+    restart: unless-stopped
+    environment:
+      JOOMLA_DB_HOST: db-joomla
+      JOOMLA_DB_NAME: ${JOOMLA_DB_NAME}
+      JOOMLA_DB_USER: ${JOOMLA_DB_USER}
+      JOOMLA_DB_PASSWORD: ${JOOMLA_DB_PASSWORD}
+      # Instalación automática (sin asistente web)
+      JOOMLA_SITE_NAME: ${JOOMLA_SITE_NAME}
+      JOOMLA_ADMIN_USER: ${JOOMLA_ADMIN_NAME}
+      JOOMLA_ADMIN_USERNAME: ${JOOMLA_ADMIN_USERNAME}
+      JOOMLA_ADMIN_PASSWORD: ${JOOMLA_ADMIN_PASSWORD}
+      JOOMLA_ADMIN_EMAIL: ${JOOMLA_ADMIN_EMAIL}
+    volumes:
+      - joomla_web:/var/www/html
+      - ./config/apache/proxy-https.conf:/etc/apache2/conf-enabled/proxy-https.conf:ro
+    networks:
+      red_frontal:
+        ipv4_address: 172.30.0.11
+      red_bd_joomla:
+    depends_on:
+      db-joomla:
+        condition: service_healthy
+
+  db-joomla:
+    image: mariadb:${MARIADB_TAG:-11.4}
+    container_name: pyme-db-joomla
+    restart: unless-stopped
+    environment:
+      MARIADB_RANDOM_ROOT_PASSWORD: "yes"     # root existe pero nadie lo usa
+      MARIADB_DATABASE: ${JOOMLA_DB_NAME}
+      MARIADB_USER: ${JOOMLA_DB_USER}         # usuario propio, solo sobre su BD
+      MARIADB_PASSWORD: ${JOOMLA_DB_PASSWORD}
+    volumes:
+      - joomla_db:/var/lib/mysql
+    networks:
+      red_bd_joomla:
+        ipv4_address: 172.30.1.10
+    healthcheck: *mariadb-healthcheck
+
+  # -------------------------------------------------------------------
+  #  SERVICIO 2: GLPI (gestión de incidencias e inventario)
+  # -------------------------------------------------------------------
+  glpi:
+    image: glpi/glpi:${GLPI_TAG:-latest}
+    container_name: pyme-glpi
+    restart: unless-stopped
+    environment:
+      GLPI_DB_HOST: db-glpi
+      GLPI_DB_PORT: 3306
+      GLPI_DB_NAME: ${GLPI_DB_NAME}
+      GLPI_DB_USER: ${GLPI_DB_USER}
+      GLPI_DB_PASSWORD: ${GLPI_DB_PASSWORD}
+      TZ: ${TZ:-Europe/Madrid}
+    volumes:
+      - glpi_datos:/var/glpi
+      - ./config/apache/proxy-https.conf:/etc/apache2/conf-enabled/proxy-https.conf:ro
+    networks:
+      red_frontal:
+        ipv4_address: 172.30.0.12
+      red_bd_glpi:
+    depends_on:
+      db-glpi:
+        condition: service_healthy
+
+  db-glpi:
+    image: mariadb:${MARIADB_TAG:-11.4}
+    container_name: pyme-db-glpi
+    restart: unless-stopped
+    environment:
+      MARIADB_RANDOM_ROOT_PASSWORD: "yes"
+      MARIADB_DATABASE: ${GLPI_DB_NAME}
+      MARIADB_USER: ${GLPI_DB_USER}
+      MARIADB_PASSWORD: ${GLPI_DB_PASSWORD}
+      TZ: ${TZ:-Europe/Madrid}
+    volumes:
+      - glpi_db:/var/lib/mysql
+    networks:
+      red_bd_glpi:
+        ipv4_address: 172.30.2.10
+    healthcheck: *mariadb-healthcheck
+
+  # -------------------------------------------------------------------
+  #  SERVICIO 3: NEXTCLOUD (repositorio documental)
+  # -------------------------------------------------------------------
+  nextcloud:
+    image: nextcloud:${NEXTCLOUD_TAG:-stable-apache}
+    container_name: pyme-nextcloud
+    restart: unless-stopped
+    environment:
+      MYSQL_HOST: db-nextcloud
+      MYSQL_DATABASE: ${NEXTCLOUD_DB_NAME}
+      MYSQL_USER: ${NEXTCLOUD_DB_USER}
+      MYSQL_PASSWORD: ${NEXTCLOUD_DB_PASSWORD}
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD}
+      NEXTCLOUD_TRUSTED_DOMAINS: "nube.${DOMINIO} nextcloud"
+      REDIS_HOST: redis-nextcloud
+      REDIS_HOST_PASSWORD: ${REDIS_PASSWORD}
+      # Está detrás de un proxy que termina el TLS
+      OVERWRITEPROTOCOL: https
+      OVERWRITEHOST: nube.${DOMINIO}
+      TRUSTED_PROXIES: 172.30.0.10
+      PHP_UPLOAD_LIMIT: 1G
+    volumes:
+      - nextcloud_web:/var/www/html
+    networks:
+      red_frontal:
+        ipv4_address: 172.30.0.13
+      red_bd_nextcloud:
+    depends_on:
+      db-nextcloud:
+        condition: service_healthy
+      redis-nextcloud:
+        condition: service_started
+
+  # Tareas en segundo plano de Nextcloud (método recomendado: cron)
+  nextcloud-cron:
+    image: nextcloud:${NEXTCLOUD_TAG:-stable-apache}
+    container_name: pyme-nextcloud-cron
+    restart: unless-stopped
+    entrypoint: /cron.sh
+    volumes:
+      - nextcloud_web:/var/www/html
+    networks:
+      red_bd_nextcloud:
+    depends_on:
+      - nextcloud
+
+  db-nextcloud:
+    image: mariadb:${MARIADB_TAG:-11.4}
+    container_name: pyme-db-nextcloud
+    restart: unless-stopped
+    command: --transaction-isolation=READ-COMMITTED --log-bin=binlog --binlog-format=ROW
+    environment:
+      MARIADB_RANDOM_ROOT_PASSWORD: "yes"
+      MARIADB_DATABASE: ${NEXTCLOUD_DB_NAME}
+      MARIADB_USER: ${NEXTCLOUD_DB_USER}
+      MARIADB_PASSWORD: ${NEXTCLOUD_DB_PASSWORD}
+    volumes:
+      - nextcloud_db:/var/lib/mysql
+    networks:
+      red_bd_nextcloud:
+        ipv4_address: 172.30.3.10
+    healthcheck: *mariadb-healthcheck
+
+  redis-nextcloud:
+    image: redis:7-alpine
+    container_name: pyme-redis-nextcloud
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
+    networks:
+      red_bd_nextcloud:
+        ipv4_address: 172.30.3.11
+
+  # -------------------------------------------------------------------
+  #  AMPLIACIÓN: MONITORIZACIÓN
+  # -------------------------------------------------------------------
+  uptime-kuma:
+    image: louislam/uptime-kuma:${KUMA_TAG:-1}
+    container_name: pyme-uptime-kuma
+    restart: unless-stopped
+    volumes:
+      - kuma_datos:/app/data
+    networks:
+      red_frontal:
+        ipv4_address: 172.30.0.14
+
+# ---------------------------------------------------------------------
+#  REDES
+#  - red_frontal: proxy <-> aplicaciones (con salida a Internet)
+#  - red_bd_*: internal: true -> sin salida y sin acceso desde fuera.
+#    Cada base de datos solo la ve su aplicación.
+# ---------------------------------------------------------------------
+networks:
+  red_frontal:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+  red_bd_joomla:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.1.0/24
+  red_bd_glpi:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.2.0/24
+  red_bd_nextcloud:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.3.0/24
+
+volumes:
+  joomla_web:
+  joomla_db:
+  glpi_datos:
+  glpi_db:
+  nextcloud_web:
+  nextcloud_db:
+  kuma_datos:

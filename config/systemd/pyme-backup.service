@@ -1,0 +1,10 @@
+[Unit]
+Description=Copia de seguridad de los servicios PYME
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+# Cambia la ruta si clonaste el repositorio en otro sitio
+WorkingDirectory=/opt/pyme-servicios
+ExecStart=/opt/pyme-servicios/scripts/backup.sh
